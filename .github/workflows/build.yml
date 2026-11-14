@@ -1,0 +1,85 @@
+name: Build APK
+
+# 三种触发方式：
+#   1. 推代码到 main / master  -> 自动编译
+#   2. 网页上手动点 Run        -> 手动编译
+#   3. 打 tag（v1.0 这种）      -> 编译 + 挂到 Release 便于下载
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 编译 APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 安装 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 安装 SDK Platform 35 与 Build-Tools
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: 安装 Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      # 仓库根可能是 android/，也可能是它的上一级，自动判断
+      - name: 定位工程目录
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/android/settings.gradle.kts" ]; then
+            echo "PROJECT_DIR=$GITHUB_WORKSPACE/android" >> "$GITHUB_ENV"
+          else
+            echo "PROJECT_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          fi
+
+      - name: 编译
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          chmod +x ./gradlew 2>/dev/null || true
+          if [ -x ./gradlew ]; then
+            ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          else
+            gradle :app:assembleRelease --no-daemon --stacktrace
+          fi
+
+      - name: 重命名产物
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp "$PROJECT_DIR"/app/build/outputs/apk/release/*.apk \
+             "$GITHUB_WORKSPACE/out/DynamicIsland.apk"
+          ls -lh "$GITHUB_WORKSPACE/out"
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: DynamicIsland-apk
+          path: ${{ github.workspace }}/out/DynamicIsland.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      # 打 tag 时额外挂到 Release，手机上直接点链接下载
+      - name: 发布到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ github.workspace }}/out/DynamicIsland.apk
+          generate_release_notes: true
